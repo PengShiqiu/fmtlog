@@ -215,11 +215,67 @@ public:
     int argIdx;
   };
 
+  class Logger {
+   private:
+    static constexpr auto maxFileSize = FMTLOG_FILE_SIZE;
+    static constexpr auto maxFileNum = FMTLOG_FILE_CNT;
+
+    FILE* outputFp = nullptr;
+    std::string filenameTemplate;
+    int index = 0;
+    long currentFileSize = 0; // track the current file size
+
+    std::string getNextFilename() {
+      std::string path = fmt::format("{}_{}.log", filenameTemplate, index);
+      std::printf("path = %s\n", path.c_str());
+      index = ++index % maxFileNum;
+      return path;
+    }
+
+    void openNextFile() {
+      if (outputFp != nullptr) {
+        fclose(outputFp);
+      }
+      outputFp = fopen(getNextFilename().c_str(), "w");
+      if (!outputFp) {
+        std::string err = fmt::format("Unable to open file: {}: {}", filenameTemplate, strerror(errno));
+        fmt::detail::throw_format_error(err.c_str());
+      }
+      currentFileSize = 0; // reset the file size counter
+    }
+
+   public:
+    Logger(const std::string& path) : filenameTemplate(path) {
+      openNextFile();
+    }
+
+    ~Logger() {
+      if (outputFp != nullptr) {
+        fclose(outputFp);
+      }
+    }
+
+    void log(const void* data, uint32_t size) {
+      if (!outputFp) {
+        std::string err = fmt::format("Unable to open file: {}: {}", filenameTemplate, strerror(errno));
+        fmt::detail::throw_format_error(err.c_str());
+      }
+      if (currentFileSize >= maxFileSize) {
+        openNextFile();
+      }
+      size_t written = fwrite(data, sizeof(char), size, outputFp);
+      fwrite("\n", sizeof(char), 1, outputFp);
+      fflush(outputFp);
+      currentFileSize += written + 1; // update the file size counter
+    }
+  };
+
   static thread_local ThreadBufferDestroyer sbc;
   int64_t midnightNs;
   fmt::string_view headerPattern;
   bool shouldDeallocateHeader = false;
   FILE* outputFp = nullptr;
+  Logger* outputLoger = nullptr;
   bool manageFp = false;
   size_t fpos = 0; // file position of membuf, used only when manageFp == true
   int64_t flushDelay;
@@ -319,6 +375,11 @@ public:
       else
         fpos += membuf.size();
     }
+
+    if (outputLoger) {
+      outputLoger->log(membuf.data(), membuf.size());
+    }
+
     membuf.clear();
     nextFlushTime = (std::numeric_limits<int64_t>::max)();
   }
@@ -328,6 +389,8 @@ public:
     if (manageFp) fclose(outputFp);
     outputFp = nullptr;
     manageFp = false;
+    if (outputLoger) delete outputLoger;
+    outputLoger = nullptr;
   }
 
   void startPollingThread(int64_t pollInterval) {
@@ -544,17 +607,26 @@ void fmtlogT<_>::preallocate() noexcept {
 template<int _>
 void fmtlogT<_>::setLogFile(const char* filename, bool truncate) {
   auto& d = fmtlogDetailWrapper<>::impl;
-  FILE* newFp = fopen(filename, truncate ? "w" : "a");
-  if (!newFp) {
-    std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
-    fmt::detail::throw_format_error(err.c_str());
-  }
-  setbuf(newFp, nullptr);
-  d.fpos = ftell(newFp);
+#if 1
+    d.fpos = 0;
+    d.outputFp = nullptr;
+    d.manageFp = false;
 
-  closeLogFile();
-  d.outputFp = newFp;
-  d.manageFp = true;
+    // use Loger write log to file
+    d.outputLoger = new fmtlogDetailT<>::Logger(filename);
+#else
+    FILE* newFp = fopen(filename, "w");
+    if (!newFp) {
+      std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
+      fmt::detail::throw_format_error(err.c_str());
+    }
+    setbuf(newFp, nullptr);
+    d.fpos = ftell(newFp);
+
+    closeLogFile();
+    d.outputFp = newFp;
+    d.manageFp = true;
+#endif
 }
 
 template<int _>

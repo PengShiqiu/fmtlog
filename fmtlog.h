@@ -61,6 +61,14 @@ SOFTWARE.
 #define FMTLOG_QUEUE_SIZE (1 << 20)
 #endif
 
+#ifndef FMTLOG_FILE_SIZE
+#define FMTLOG_FILE_SIZE (500 << 20) // 500M
+#endif
+
+#ifndef FMTLOG_FILE_CNT
+#define FMTLOG_FILE_CNT 10
+#endif
+
 namespace fmtlogdetail {
 template<typename Arg>
 struct UnrefPtr : std::false_type
